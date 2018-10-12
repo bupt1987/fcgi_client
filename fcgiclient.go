@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"github.com/pquerna/ffjson/ffjson"
 )
 
 const FCGI_LISTENSOCK_FILENO uint8 = 0
@@ -34,7 +35,7 @@ const FCGI_KEEP_CONN uint8 = 1
 const doubleCRLF = "\r\n\r\n"
 
 const (
-	FCGI_BEGIN_REQUEST uint8 = iota + 1
+	FCGI_BEGIN_REQUEST     uint8 = iota + 1
 	FCGI_ABORT_REQUEST
 	FCGI_END_REQUEST
 	FCGI_PARAMS
@@ -45,11 +46,11 @@ const (
 	FCGI_GET_VALUES
 	FCGI_GET_VALUES_RESULT
 	FCGI_UNKNOWN_TYPE
-	FCGI_MAXTYPE = FCGI_UNKNOWN_TYPE
+	FCGI_MAXTYPE           = FCGI_UNKNOWN_TYPE
 )
 
 const (
-	FCGI_RESPONDER uint8 = iota + 1
+	FCGI_RESPONDER  uint8 = iota + 1
 	FCGI_AUTHORIZER
 	FCGI_FILTER
 )
@@ -470,6 +471,15 @@ func (this *FCGIClient) Post(p map[string]string, bodyType string, body io.Reade
 func (this *FCGIClient) PostForm(p map[string]string, data url.Values) (resp *http.Response, err error) {
 	body := bytes.NewReader([]byte(data.Encode()))
 	return this.Post(p, "application/x-www-form-urlencoded", body, body.Len())
+}
+
+func (this *FCGIClient) PostJson(p map[string]string, data interface{}) (resp *http.Response, err error) {
+	json, err := ffjson.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	body := bytes.NewReader([]byte(json))
+	return this.Post(p, "application/json", body, body.Len())
 }
 
 // PostFile issues a POST to the fcgi responder in multipart(RFC 2046) standard,
