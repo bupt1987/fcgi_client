@@ -128,13 +128,58 @@ type FCGIClient struct {
 	rwc       io.ReadWriteCloser
 	h         header
 	buf       bytes.Buffer
-	keepAlive bool
 	reqId     uint16
+}
+
+type idPool struct {
+	IDs chan uint16
+}
+
+// AllocID implements Client.AllocID
+func (p *idPool) Alloc() uint16 {
+	return <-p.IDs
+}
+
+// ReleaseID implements Client.ReleaseID
+func (p *idPool) Release(id uint16) {
+	go func() {
+		// release the ID back to channel for reuse
+		// use goroutine to prev0, ent blocking ReleaseID
+		p.IDs <- id
+	}()
+}
+
+var pool *idPool
+var one sync.Once
+
+func GetIdPool(limit uint32) *idPool {
+	// sanatize limit
+	if limit == 0 || limit > 65536 {
+		limit = 65536
+	}
+
+	one.Do(func() {
+		var ids = make(chan uint16)
+
+		go func(maxID uint16) {
+			for i := uint16(0); i < maxID; i++ {
+				ids <- i
+			}
+			ids <- uint16(maxID)
+		}(uint16(limit - 1))
+		pool = &idPool{IDs: ids}
+	})
+
+	return pool
+}
+
+func init()  {
+	pool = GetIdPool(65536)
 }
 
 // Connects to the fcgi responder at the specified network address.
 // See func net.Dial for a description of the network and address parameters.
-func Dial(network, address string) (fcgi *FCGIClient, err error) {
+func NewClient(network, address string) (fcgi *FCGIClient, err error) {
 	var conn net.Conn
 
 	conn, err = net.Dial(network, address)
@@ -144,8 +189,7 @@ func Dial(network, address string) (fcgi *FCGIClient, err error) {
 
 	fcgi = &FCGIClient{
 		rwc:       conn,
-		keepAlive: false,
-		reqId:     1,
+		reqId:     0,
 	}
 
 	return
@@ -153,7 +197,7 @@ func Dial(network, address string) (fcgi *FCGIClient, err error) {
 
 // Connects to the fcgi responder at the specified network address with timeout
 // See func net.DialTimeout for a description of the network, address and timeout parameters.
-func DialTimeout(network, address string, timeout time.Duration) (fcgi *FCGIClient, err error) {
+func NewClientTimeout(network, address string, timeout time.Duration) (fcgi *FCGIClient, err error) {
 
 	var conn net.Conn
 
@@ -164,8 +208,7 @@ func DialTimeout(network, address string, timeout time.Duration) (fcgi *FCGIClie
 
 	fcgi = &FCGIClient{
 		rwc:       conn,
-		keepAlive: false,
-		reqId:     1,
+		reqId:     0,
 	}
 
 	return
@@ -381,6 +424,9 @@ func (e *badStringError) Error() string { return fmt.Sprintf("%s %q", e.what, e.
 // Request returns a HTTP Response with Header and Body
 // from fcgi responder
 func (this *FCGIClient) Request(p map[string]string, req io.Reader) (resp *http.Response, err error) {
+	this.reqId = pool.Alloc()
+
+	defer pool.Release(this.reqId)
 
 	r, err := this.Do(p, req)
 	if err != nil {
@@ -437,6 +483,7 @@ func (this *FCGIClient) Request(p map[string]string, req io.Reader) (resp *http.
 	} else {
 		resp.Body = ioutil.NopCloser(rb)
 	}
+
 	return
 }
 
@@ -480,6 +527,16 @@ func (this *FCGIClient) PostJson(p map[string]string, data interface{}) (resp *h
 	}
 	body := bytes.NewReader([]byte(json))
 	return this.Post(p, "application/json", body, body.Len())
+}
+
+func (this *FCGIClient) PostJsonByte(p map[string]string, data []byte) (resp *http.Response, err error) {
+	body := bytes.NewReader(data)
+	return this.Post(p, "application/json", body, body.Len())
+}
+
+func (this *FCGIClient) PostStream(p map[string]string, data string) (resp *http.Response, err error) {
+	body := bytes.NewReader([]byte(data))
+	return this.Post(p, "application/octet-stream", body, body.Len())
 }
 
 // PostFile issues a POST to the fcgi responder in multipart(RFC 2046) standard,
